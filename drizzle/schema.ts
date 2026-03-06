@@ -1,4 +1,4 @@
-import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, boolean } from "drizzle-orm/mysql-core";
+import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, boolean, decimal } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -202,3 +202,39 @@ export const callTrackingEvents = mysqlTable("call_tracking_events", {
 
 export type CallTrackingEvent = typeof callTrackingEvents.$inferSelect;
 export type InsertCallTrackingEvent = typeof callTrackingEvents.$inferInsert;
+
+/**
+ * Subscriptions table — tracks subscription lifecycle including cancellations.
+ * Used by the win-back email system to identify churned users.
+ */
+export const subscriptions = mysqlTable("subscriptions", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  plan: varchar("plan", { length: 100 }).notNull(),
+  status: mysqlEnum("status", ["active", "cancelled", "expired", "paused"]).default("active").notNull(),
+  cancelledAt: timestamp("cancelledAt"),
+  cancelReason: text("cancelReason"),
+  amountPaid: decimal("amountPaid", { precision: 10, scale: 2 }),
+  currency: varchar("currency", { length: 10 }).default("GBP").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type Subscription = typeof subscriptions.$inferSelect;
+export type InsertSubscription = typeof subscriptions.$inferInsert;
+
+/**
+ * Win-back email log — records every win-back email dispatched so the
+ * scheduler never sends duplicates and admins can audit delivery.
+ */
+export const winbackEmailLogs = mysqlTable("winback_email_logs", {
+  id: int("id").autoincrement().primaryKey(),
+  subscriptionId: int("subscriptionId").notNull(),
+  userId: int("userId").notNull(),
+  emailType: mysqlEnum("emailType", ["7day", "30day"]).notNull(),
+  recipientEmail: varchar("recipientEmail", { length: 320 }).notNull(),
+  status: mysqlEnum("status", ["sent", "failed", "skipped"]).default("sent").notNull(),
+  errorMessage: text("errorMessage"),
+  sentAt: timestamp("sentAt").defaultNow().notNull(),
+});
+export type WinbackEmailLog = typeof winbackEmailLogs.$inferSelect;
+export type InsertWinbackEmailLog = typeof winbackEmailLogs.$inferInsert;
