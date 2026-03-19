@@ -17,7 +17,13 @@ import {
   BlogPost,
   pageContentSections,
   InsertPageContentSection,
-  PageContentSection
+  PageContentSection,
+  subscriptions,
+  InsertSubscription,
+  Subscription,
+  winbackEmails,
+  InsertWinbackEmail,
+  WinbackEmail,
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
@@ -395,4 +401,140 @@ export async function upsertPageContentSection(
       ...section
     });
   }
+}
+
+// ==================== Subscriptions ====================
+
+export async function createSubscription(sub: InsertSubscription): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.insert(subscriptions).values(sub);
+}
+
+export async function getSubscriptionById(id: number): Promise<Subscription | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(subscriptions).where(eq(subscriptions.id, id)).limit(1);
+  return result[0];
+}
+
+export async function getCancelledSubscriptions(): Promise<Subscription[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(subscriptions)
+    .where(eq(subscriptions.status, "cancelled"))
+    .orderBy(desc(subscriptions.cancelledAt));
+}
+
+export async function updateSubscription(id: number, data: Partial<InsertSubscription>): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(subscriptions).set(data).where(eq(subscriptions.id, id));
+}
+
+// ==================== Win-back Emails ====================
+
+/**
+ * Schedule the two win-back emails (7-day and 30-day) for a newly cancelled subscription.
+ * Idempotent: skips creation if a row already exists for the same subscription + emailType.
+ */
+export async function scheduleWinbackEmails(subscriptionId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const sub = await getSubscriptionById(subscriptionId);
+  if (!sub || !sub.cancelledAt) {
+    throw new Error(`Subscription ${subscriptionId} not found or not cancelled`);
+  }
+
+  const cancelledAt = sub.cancelledAt;
+
+  const sevenDaySchedule = new Date(cancelledAt.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const thirtyDaySchedule = new Date(cancelledAt.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+  const emailTypes: Array<{ emailType: "7day" | "30day"; scheduledAt: Date }> = [
+    { emailType: "7day", scheduledAt: sevenDaySchedule },
+    { emailType: "30day", scheduledAt: thirtyDaySchedule },
+  ];
+
+  for (const { emailType, scheduledAt } of emailTypes) {
+    // Check for existing row to ensure idempotency
+    const existing = await db
+      .select()
+      .from(winbackEmails)
+      .where(
+        and(
+          eq(winbackEmails.subscriptionId, subscriptionId),
+          eq(winbackEmails.emailType, emailType)
+        )
+      )
+      .limit(1);
+
+    if (existing.length === 0) {
+      await db.insert(winbackEmails).values({
+        subscriptionId,
+        userId: sub.userId,
+        userEmail: sub.userEmail,
+        userName: sub.userName ?? null,
+        emailType,
+        scheduledAt,
+        status: "pending",
+        retryCount: 0,
+      });
+    }
+  }
+}
+
+/**
+ * Fetch all win-back emails that are due to be sent (scheduledAt <= now, status = pending).
+ */
+export async function getPendingWinbackEmails(): Promise<WinbackEmail[]> {
+  const db = await getDb();
+  if (!db) return [];
+
+  const now = new Date();
+
+  // Drizzle MySQL does not expose a lte helper directly; use raw SQL comparison via sql tag
+  // Instead we fetch all pending and filter in JS to avoid importing sql tag
+  const allPending = await db
+    .select()
+    .from(winbackEmails)
+    .where(eq(winbackEmails.status, "pending"))
+    .orderBy(asc(winbackEmails.scheduledAt));
+
+  return allPending.filter((row) => row.scheduledAt <= now);
+}
+
+export async function markWinbackEmailSent(id: number): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db
+    .update(winbackEmails)
+    .set({ status: "sent", sentAt: new Date() })
+    .where(eq(winbackEmails.id, id));
+}
+
+export async function markWinbackEmailFailed(id: number, errorMessage: string): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const existing = await db.select().from(winbackEmails).where(eq(winbackEmails.id, id)).limit(1);
+  const currentRetryCount = existing[0]?.retryCount ?? 0;
+
+  await db
+    .update(winbackEmails)
+    .set({
+      status: "failed",
+      errorMessage,
+      retryCount: currentRetryCount + 1,
+    })
+    .where(eq(winbackEmails.id, id));
+}
+
+export async function createWinbackEmail(email: InsertWinbackEmail): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.insert(winbackEmails).values(email);
 }

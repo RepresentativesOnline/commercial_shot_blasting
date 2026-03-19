@@ -202,3 +202,47 @@ export const callTrackingEvents = mysqlTable("call_tracking_events", {
 
 export type CallTrackingEvent = typeof callTrackingEvents.$inferSelect;
 export type InsertCallTrackingEvent = typeof callTrackingEvents.$inferInsert;
+
+/**
+ * Subscriptions table – tracks user subscription lifecycle including cancellations.
+ * Win-back emails are triggered from this table when cancelledAt is set.
+ */
+export const subscriptions = mysqlTable("subscriptions", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  userEmail: varchar("userEmail", { length: 320 }).notNull(),
+  userName: varchar("userName", { length: 255 }),
+  plan: varchar("plan", { length: 100 }).notNull().default("standard"), // e.g. "standard", "pro", "enterprise"
+  status: mysqlEnum("status", ["active", "cancelled", "expired", "paused"]).default("active").notNull(),
+  cancelledAt: timestamp("cancelledAt"),
+  cancelReason: text("cancelReason"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type Subscription = typeof subscriptions.$inferSelect;
+export type InsertSubscription = typeof subscriptions.$inferInsert;
+
+/**
+ * Win-back emails table – tracks scheduled and sent win-back emails.
+ * A row is created for each email type (7-day, 30-day) when a subscription is cancelled.
+ * Status transitions: pending → sent | failed
+ */
+export const winbackEmails = mysqlTable("winback_emails", {
+  id: int("id").autoincrement().primaryKey(),
+  subscriptionId: int("subscriptionId").notNull(),
+  userId: int("userId").notNull(),
+  userEmail: varchar("userEmail", { length: 320 }).notNull(),
+  userName: varchar("userName", { length: 255 }),
+  emailType: mysqlEnum("emailType", ["7day", "30day"]).notNull(),
+  scheduledAt: timestamp("scheduledAt").notNull(), // When this email should be sent
+  sentAt: timestamp("sentAt"),                     // Populated on successful send
+  status: mysqlEnum("status", ["pending", "sent", "failed"]).default("pending").notNull(),
+  errorMessage: text("errorMessage"),              // Populated on failure
+  retryCount: int("retryCount").default(0).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type WinbackEmail = typeof winbackEmails.$inferSelect;
+export type InsertWinbackEmail = typeof winbackEmails.$inferInsert;
